@@ -116,6 +116,17 @@
   (defalias 'lua--cl-labels
     (if (fboundp 'cl-labels) 'cl-labels 'flet))
 
+  (if (fboundp 'syntax-ppss)
+      (defalias 'lua--syntax-ppss 'syntax-ppss)
+    (defun lua--syntax-ppss (&optional pos)
+      (save-excursion
+        (goto-char pos)
+        (parse-partial-sexp (line-beginning-position) pos))))
+
+  (if (fboundp 'syntax-ppss-flush-cache)
+      (defalias 'lua--syntax-ppss-flush-cache 'syntax-ppss-flush-cache)
+    (defun lua--syntax-ppss-flush-cache (&optional pos) ))
+
   ;; for Emacsen < 22.1
   (defalias 'lua--with-no-warnings
     (if (fboundp 'with-no-warnings) 'with-no-warnings 'progn))
@@ -598,22 +609,22 @@ This function replaces previous prefix-key binding with a new one."
 
 (defun lua-string-p (&optional pos)
   "Returns true if the point is in a string."
-  (save-excursion (elt (syntax-ppss pos) 3)))
+  (save-excursion (elt (lua--syntax-ppss pos) 3)))
 
 (defun lua-comment-p (&optional pos)
   "Returns true if the point is in a comment."
-  (save-excursion (elt (syntax-ppss pos) 4)))
+  (save-excursion (elt (lua--syntax-ppss pos) 4)))
 
 (defun lua-comment-or-string-p (&optional pos)
   "Returns true if the point is in a comment or string."
-  (save-excursion (let ((parse-result (syntax-ppss pos)))
+  (save-excursion (let ((parse-result (lua--syntax-ppss pos)))
                     (or (elt parse-result 3) (elt parse-result 4)))))
 
 (defun lua-comment-or-string-start (&optional pos)
   "Returns start position of string or comment which contains point.
 
 If point is not inside string or comment, return nil."
-  (save-excursion (elt (syntax-ppss pos) 8)))
+  (save-excursion (elt (lua--syntax-ppss pos) 8)))
 
 (defun lua-indent-line ()
   "Indent current line for Lua mode.
@@ -1504,7 +1515,7 @@ left out."
   ;; is the hook that keeps `syntax-ppss' internal cache up-to-date. If this
   ;; isn't done, the results of subsequent calls to `syntax-ppss' are
   ;; invalid. To avoid such cache discrepancy, the hook must be run manually.
-  (syntax-ppss-flush-cache pos))
+  (lua--syntax-ppss-flush-cache pos))
 
 (defsubst lua-put-char-syntax-table (pos value &optional object)
   (lua-put-char-property pos 'syntax-table value object))
@@ -1522,14 +1533,14 @@ mark char as comment delimiter.  Otherwise, remove the mark if any."
    (lua-put-char-syntax-table pos (lua-get-multiline-delim-syntax type)))
 
 (defsubst lua-inside-multiline-p (&optional pos)
-  (let ((status (syntax-ppss pos)))
+  (let ((status (lua--syntax-ppss pos)))
     (or (eq (elt status 3) t)                ;; inside generic string
         (eq (elt status 7) 'syntax-table)))) ;; inside generic comment
 
 (defun lua-get-multiline-start (&optional pos)
   (interactive)
   (when (lua-inside-multiline-p pos) ;; return string/comment start
-    (elt (syntax-ppss pos) 8)))
+    (elt (lua--syntax-ppss pos) 8)))
 
 (defun lua-unmark-multiline-literals (&optional begin end)
   "Clears all Lua multiline construct markers in region
@@ -1548,7 +1559,7 @@ If END is nil, stop at `end-of-buffer'."
   ;; is the hook that keeps `syntax-ppss' internal cache up-to-date. If this
   ;; isn't done, the results of subsequent calls to `syntax-ppss' are
   ;; invalid. To avoid such cache discrepancy, the hook must be run manually.
-  (syntax-ppss-flush-cache begin)
+  (lua--syntax-ppss-flush-cache begin)
 
   (font-lock-fontify-buffer))
 
