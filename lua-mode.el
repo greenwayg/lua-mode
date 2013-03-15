@@ -531,6 +531,17 @@ index of respective Lua reference manuals.")
   (rx (seq (? (group-n 1 "--")) (group-n 2 "[" (group-n 3 (* "=")) "["))))
 
 
+(defsubst lua-inside-multiline-p (&optional syntax-status)
+  (let ((status (or syntax-status (syntax-ppss))))
+    (or (eq (elt status 3) t)   ;; inside generic string
+        (eq (elt status 7) 1)))) ;; inside 'type b' comment
+
+(defun lua-get-multiline-start (&optional pos)
+  (interactive)
+  (let ((ppss (syntax-ppss pos)))
+    (when (lua-inside-multiline-p ppss) ;; return string/comment start
+      (elt ppss 8))))
+
 (defun lua-propertize-multiline-end (end)
   "Propertize closing bracket of multiline literal containing current position.
 
