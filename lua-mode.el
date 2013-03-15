@@ -521,6 +521,78 @@ index of respective Lua reference manuals.")
     (syntax-table))
   "`lua-mode' syntax table.")
 
+;; These are syntax properties to be used for proper markup of multiline string
+;; & comment literals, [[...]] and --[[...]] .
+(defconst lua--ml-string-delim-syntax (string-to-syntax "|"))
+(defconst lua--ml-comment-begin-syntax (string-to-syntax "< b"))
+(defconst lua--ml-comment-end-syntax (string-to-syntax "> b"))
+
+(defconst lua-ml-begin-regexp
+  (rx (seq (? (group-n 1 "--")) (group-n 2 "[" (group-n 3 (* "=")) "["))))
+
+
+(defun lua-propertize-multiline-end (end)
+  "Propertize closing bracket of multiline literal containing current position.
+
+The point is placed right after matching closing bracket or at
+END if none were found before reaching END position.
+
+If current position is not inside a literal, do nothing."
+  (let ((begin-pos (lua-comment-or-string-start))
+        end-syntax)
+    (save-match-data
+     (when (and begin-pos
+                (prog1
+                    (save-excursion
+                      (goto-char begin-pos)
+                      (looking-at lua-ml-begin-regexp))
+                  (setq end-syntax
+                        (cond ((match-beginning 1) lua--ml-comment-end-syntax)
+                              ((match-beginning 2) lua--ml-string-delim-syntax)
+                              )))
+                ;; When looking for closing brackets, disregard any
+                ;; strings/comments that the said bracket may be a part of:
+                ;; multiline literal is meant to take precedence over them.
+                (search-forward
+                 (concat "]" (match-string-no-properties 3) "]")
+                 end 'noerror))
+
+       ;; search-forward leaves cursor behind the match in case of success, so
+       ;; text property is put at (point)-1 position.
+       (put-text-property (1- (point)) (point) 'syntax-table end-syntax)
+       t))))
+
+
+(defun lua-propertize-multiline-literals (start end)
+  ;; (message "lua-propertize-multiline-literals %s %s" start end)
+  (goto-char start)
+
+  ;; First, close any multiline literal spanning from previous block. This will
+  ;; move the point accordingly so as to avoid double traversal.
+  (lua-propertize-multiline-end end)
+
+  ;; Then, go find next open-brackets & try to propertize their counterparts
+  ;; immediately.  Skip open-brackets that are already inside comment or string.
+  ;;
+  ;; (1+ (match-beginning 0)) is required to handle triple-hyphen '---[['
+  ;; situation: regexp matches starting from the second one, but it's not yet a
+  ;; comment, because it's a part of 2-character comment-start sequence, so if
+  ;; we try to detect if the opener is inside a comment from the second hyphen,
+  ;; it'll fail.  But the third one _is_ inside a comment and considering it
+  ;; instead will fix the issue. --immerrr
+  (while (and (< (point) end)
+              (re-search-forward lua-ml-begin-regexp end 'noerror))
+    (unless (lua-comment-or-string-start (1+ (match-beginning 0)))
+      (let* ((mb1 (match-beginning 1))
+             (mb2 (match-beginning 2))
+             (syntax (if mb1 lua--ml-comment-begin-syntax
+                       lua--ml-string-delim-syntax))
+             (pos (if mb1 mb1 mb2)))
+
+        (put-text-property pos (1+ pos) 'syntax-table syntax))
+      (lua-propertize-multiline-end end))))
+
+
 ;;;###autoload
 (define-derived-mode lua-mode lua--prog-mode "Lua"
   "Major mode for editing Lua code."
@@ -570,8 +642,8 @@ index of respective Lua reference manuals.")
                      nil lua-forward-sexp)))
 
     (set (make-local-variable 'parse-sexp-lookup-properties) t)
-    (lua-mark-all-multiline-literals)
-    (lua--automark-multiline-update-timer)))
+    (set (make-local-variable 'syntax-propertize-function)
+         'lua-propertize-multiline-literals)))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.lua$" . lua-mode))
@@ -1529,173 +1601,6 @@ left out."
   '("Send Buffer" . lua-send-buffer))
 (define-key lua-mode-menu [search-documentation]
   '("Search Documentation" . lua-search-documentation))
-
-(defsubst lua-put-char-property (pos property value &optional object)
-  (lua--with-silent-modifications
-
-   (if value
-       (put-text-property pos (1+ pos) property value object)
-     (remove-text-properties pos (1+ pos) (list property nil))))
-
-  ;; `lua--with-silent-modifications' inhibits modification hooks, one of which
-  ;; is the hook that keeps `syntax-ppss' internal cache up-to-date. If this
-  ;; isn't done, the results of subsequent calls to `syntax-ppss' are
-  ;; invalid. To avoid such cache discrepancy, the hook must be run manually.
-  (syntax-ppss-flush-cache pos))
-
-(defsubst lua-put-char-syntax-table (pos value &optional object)
-  (lua-put-char-property pos 'syntax-table value object))
-
-(defsubst lua-get-multiline-delim-syntax (type)
-  (cond ((eq type 'string) '(15))
-        ((eq type 'comment) '(14))
-        (nil)))
-
-(defun lua-mark-char-multiline-delim (pos type)
-  "Mark character as a delimiter of Lua multiline construct
-
-If TYPE is string, mark char  as string delimiter. If TYPE is comment,
-mark char as comment delimiter.  Otherwise, remove the mark if any."
-   (lua-put-char-syntax-table pos (lua-get-multiline-delim-syntax type)))
-
-(defsubst lua-inside-multiline-p (&optional pos)
-  (let ((status (syntax-ppss pos)))
-    (or (eq (elt status 3) t)                ;; inside generic string
-        (eq (elt status 7) 'syntax-table)))) ;; inside generic comment
-
-(defun lua-get-multiline-start (&optional pos)
-  (interactive)
-  (when (lua-inside-multiline-p pos) ;; return string/comment start
-    (elt (syntax-ppss pos) 8)))
-
-(defun lua-unmark-multiline-literals (&optional begin end)
-  "Clears all Lua multiline construct markers in region
-
-If BEGIN is nil, start from `beginning-of-buffer'.
-If END is nil, stop at `end-of-buffer'."
-  (interactive)
-
-  (setq begin (or begin (point-min))
-        end   (or end   (point-max)))
-
-  (lua--with-silent-modifications
-   (remove-text-properties begin end '(syntax-table ())))
-
-  ;; `lua--with-silent-modifications' inhibits modification hooks, one of which
-  ;; is the hook that keeps `syntax-ppss' internal cache up-to-date. If this
-  ;; isn't done, the results of subsequent calls to `syntax-ppss' are
-  ;; invalid. To avoid such cache discrepancy, the hook must be run manually.
-  (syntax-ppss-flush-cache begin)
-
-  (font-lock-fontify-buffer))
-
-(defun lua-mark-multiline-region (begin end)
-  (let ((type (if (eq ?- (char-after begin)) 'comment 'string)))
-  (lua-mark-char-multiline-delim begin type)
-  (when end
-    (lua-mark-char-multiline-delim (1- end) type))))
-
-(defun lua-mark-all-multiline-literals (&optional begin end)
-  "Marks all Lua multiline constructs in region
-
-If BEGIN is nil, start from `beginning-of-buffer'.
-If END is nil, stop at `end-of-buffer'."
-  (interactive)
-
-  (if (and (lua--called-interactively-p 'any) (use-region-p))
-      (setq begin (region-beginning)
-            end (region-end)))
-
-  (lua-unmark-multiline-literals begin end)
-  (save-excursion
-    (goto-char (or begin (point-min)))
-
-    (while (and
-            ;; must check  for point range,  because matching previous
-            ;; multiline  end might  move  point beyond  end and  this
-            ;; drives `re-search-forward' crazy
-            (if end (< (point) end) t)
-            ;; look for
-            ;; 1. (optional) two or more dashes followed by
-            ;; 2. lua multiline delimiter [[
-            (re-search-forward "\\(?2:--\\)?\\[\\(?1:=*\\)\\[" end 'noerror))
-      ;; match-start + 1 is considered instead of match-start, because
-      ;; such  approach  handles  '---[[' situation  correctly:  Emacs
-      ;; thinks 2nd dash (i.e.  match-start) is not yet a comment, but
-      ;; the third one is, hence the +1.  In all the other situations,
-      ;; '+1'  is safe  to use  because  it bears  the same  syntactic
-      ;; properties, i.e.  if match-start is inside string-or-comment,
-      ;; then '+1' is too and vice versa.
-      ;;
-      ;; PS. ping me if you find a situation in which this is not true
-      (unless (lua-comment-or-string-p (1+ (match-beginning 0)))
-        (let (ml-begin ml-end)
-          (setq ml-begin (match-beginning 0))
-          (when (re-search-forward (format "\\]%s\\]" (or (match-string 1) "")) nil 'noerror)
-            ;; (message "found match %s" (match-string 0))
-            (setq ml-end (match-end 0)))
-          (lua-mark-multiline-region ml-begin ml-end))))))
-
-(defvar lua-automark-multiline-timer nil
-  "Contains idle-timer object used for automatical multiline literal markup which must be cleaned up on exit.")
-(make-variable-buffer-local 'lua-automark-multiline-timer)
-
-(defvar lua-automark-multiline-start-pos nil
-  "Contains position from which automark procedure should start.
-
-Automarking shall start at the point before which no modification has been
-made since last automark. Additionally, if such point is inside string or
-comment, rewind start position to its beginning.
-
-nil means automark is unnecessary because there were no updates.")
-(make-variable-buffer-local 'lua-automark-multiline-start-pos)
-
-(defun lua--automark-update-start-pos (change-begin change-end old-len)
-  "Updates `lua-automark-multiline-start-pos' upon buffer modification."
-  (save-excursion
-    (goto-char change-begin)
-    (beginning-of-line)
-    (setq lua-automark-multiline-start-pos
-          (or (lua-comment-or-string-start) (point)))))
-
-(defun lua--automark-multiline-update-timer ()
-  (lua--automark-multiline-cleanup)  ;; reset previous timer if it existed
-  (when lua-automark-multiline-interval
-    (add-hook 'change-major-mode-hook 'lua--automark-multiline-cleanup nil 'local)
-    (add-hook 'after-change-functions 'lua--automark-update-start-pos  nil 'local)
-    (setq lua-automark-multiline-timer
-          (run-with-idle-timer lua-automark-multiline-interval 'repeat
-                               'lua--automark-multiline-run))))
-
-(defun lua--automark-multiline-cleanup ()
-  "Disable automatical multiline construct marking"
-  (unless (null lua-automark-multiline-timer)
-    (cancel-timer lua-automark-multiline-timer)
-    (setq lua-automark-multiline-timer nil)))
-
-(defun lua--automark-multiline-run ()
-  (when (<= (buffer-size) lua-automark-multiline-maxsize)
-    (when lua-automark-multiline-start-pos
-      (lua-mark-all-multiline-literals lua-automark-multiline-start-pos)
-      (setq lua-automark-multiline-start-pos nil))))
-
-(defun lua--customize-set-automark-multiline-interval (symbol value)
-  (set symbol value)
-  (dolist (buf (buffer-list))
-    (with-current-buffer buf
-      (when (eq major-mode 'lua-mode)
-        (lua--automark-multiline-update-timer)))))
-
-(defcustom lua-automark-multiline-interval 1
-  "If not 0, specifies idle time in seconds after which lua-mode will mark multiline literals."
-  :group 'lua
-  :type 'integer
-  :set 'lua--customize-set-automark-multiline-interval)
-
-(defcustom lua-automark-multiline-maxsize 100000
-  "Maximum buffer size for which lua-mode will mark multiline literals automatically."
-  :group 'lua
-  :type 'integer)
 
 (provide 'lua-mode)
 
