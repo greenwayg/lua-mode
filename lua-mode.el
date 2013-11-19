@@ -1163,13 +1163,7 @@ use standalone."
 
    ;; block openers
    ((member found-token (list "{" "(" "["))
-	 (save-excursion
-	   ;; expression follows -> indent at start of next expression
-       ;; Last token on the line -> simple relative indent
-	   (if (and (not (search-forward-regexp "[[:space:]]--" (line-end-position) t))
-                (search-forward-regexp "[^[:space:]]" (line-end-position) t))
-           (cons 'absolute (1- (current-column)))
-         (cons 'relative lua-indent-level))))
+    (cons 'relative (* 2 lua-indent-level)))
 
    ;; These are not really block starters. They should not add to indentation.
    ;; The corresponding "then" and "do" handle the indentation.
